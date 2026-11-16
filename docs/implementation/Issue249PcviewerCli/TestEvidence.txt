@@ -1,0 +1,4 @@
+Mac non-destructive test evidence (2026-11-16)
+Apple clang version 21.0.0 (clang-2100.1.1.101)
+PCVIEWER_CLI_TEST_PASS assertions=274; pure parser/state; no device calls
+PCVIEWER_INTEGRATION_TEST_PASS assertions=197; fake Windows API only; no device calls

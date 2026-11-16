@@ -41,6 +41,8 @@
 
 #include "rufus.h"
 #include "format.h"
+#include "pcviewer_integration.h"
+#include <shellapi.h>
 #include "missing.h"
 #include "resource.h"
 #include "msapi_utf8.h"
@@ -57,6 +59,14 @@
 #include "cdio/logging.h"
 #include "../res/grub/grub_version.h"
 #include "../res/grub2/grub2_version.h"
+
+/* Dedicated v1 operation: normal GUI lifetime and options remain independent. */
+static BOOL pc_mode = FALSE, pc_configured = FALSE, pc_wait_error_reported = FALSE;
+static PcviewerRequest pc_request;
+static PcviewerSession pc_session;
+static HANDLE pc_boot_worker = NULL, pc_format_worker = NULL;
+#define TID_PCV_FINISH 0x5043
+static void PcviewerFinishLater(int result);
 
 enum bootcheck_return {
 	BOOTCHECK_PROCEED = 0,
@@ -898,6 +908,8 @@ void EnableControls(BOOL enable, BOOL remove_checkboxes)
 	EnableWindow(GetDlgItem(hMainDialog, IDS_CSM_HELP_TXT), enable);
 	EnableWindow(hFileSystem, enable);
 	EnableWindow(hClusterSize, enable);
+	if (pc_mode && pc_configured)
+		PcviewerLockControls();
 }
 
 // Populate the UI main dropdown properties.
@@ -2283,6 +2295,76 @@ static void PrintStatusTimeout(const char* str, BOOL val)
 /*
  * Main dialog callback
  */
+static BOOL PcviewerApplyProfile(void)
+{
+	DWORD target;
+	int i, match = -1;
+	if (!PcviewerResolveTarget(&pc_request, &target))
+		return FALSE;
+	for (i = 0; i < ComboBox_GetCount(hDeviceList); i++) {
+		if ((DWORD)ComboBox_GetItemData(hDeviceList, i) == target) {
+			if (match != -1) return FALSE;
+			match = i;
+		}
+	}
+	if (match < 0) return FALSE;
+	ComboBox_SetCurSel(hDeviceList, match);
+	SetComboEntry(hBootType, BT_NON_BOOTABLE);
+	boot_type = selection_default = BT_NON_BOOTABLE;
+	force_large_fat32 = TRUE;
+	selected_fs = FS_FAT32;
+	selected_pt = PARTITION_STYLE_MBR;
+	if (!PopulateProperties()) return FALSE;
+	SetComboEntry(hPartitionScheme, PARTITION_STYLE_MBR);
+	partition_type = PARTITION_STYLE_MBR;
+	SetPartitionSchemeAndTargetSystem(TRUE);
+	if (!SetFileSystemAndClusterSize(NULL)) return FALSE;
+	SetComboEntry(hFileSystem, FS_FAT32);
+	fs_type = FS_FAT32;
+	if (!SetClusterSizes(FS_FAT32)) return FALSE;
+	SetComboEntry(hClusterSize, 32768);
+	CheckDlgButton(hMainDialog, IDC_QUICK_FORMAT, BST_CHECKED);
+	CheckDlgButton(hMainDialog, IDC_EXTENDED_LABEL, BST_UNCHECKED);
+	CheckDlgButton(hMainDialog, IDC_BAD_BLOCKS, BST_UNCHECKED);
+	zero_drive = write_as_image = write_as_esp = save_image = FALSE;
+	if (!StartProcessSearch() || !SetProcessSearch(target)) StopProcessSearch();
+	return PcviewerTargetSelected(&pc_request) && PcviewerProfileMatches();
+}
+
+static VOID CALLBACK PcviewerFinishTimer(HWND window, UINT message, UINT_PTR timer_id, DWORD time)
+{
+	int observed;
+	(void)message; (void)time;
+	observed = PcviewerPollWorkers(&pc_session, &pc_boot_worker, &pc_format_worker);
+	if (observed < 0) {
+		if (!pc_wait_error_reported) {
+			uprintf("PCViewer: worker completion/handle release could not be confirmed; exit is deferred");
+			pc_wait_error_reported = TRUE;
+		}
+		SendMessageA(hStatus, SB_SETTEXTA, 0,
+			(LPARAM)"PCViewer: worker status unavailable. Exit deferred; inspect the log.");
+		return;
+	}
+	if (!observed) return;
+	op_in_progress = FALSE;
+	format_thread = NULL;
+	KillTimer(window, timer_id);
+	PostMessage(window, WM_COMMAND, IDCANCEL, 0);
+}
+
+static void PcviewerFinishLater(int result)
+{
+	PcviewerLatchResult(&pc_session, result);
+	PcviewerLockControls();
+	/* Installed only after existing result notifications have returned. */
+	if (!SetTimer(hMainDialog, TID_PCV_FINISH, 100, PcviewerFinishTimer)) {
+		PcviewerTerminalCheckFailed(&pc_session);
+		uprintf("PCViewer: cannot observe worker completion; close is deferred");
+		SendMessageA(hStatus, SB_SETTEXTA, 0,
+			(LPARAM)"PCViewer: completion timer unavailable. Exit deferred; inspect the log.");
+	}
+}
+
 static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	static DWORD DeviceNum = 0;
@@ -2306,6 +2388,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	HDC hDC;
 	PAINTSTRUCT ps;
 	DWORD log_size;
+	HANDLE boot_worker;
 	int nDeviceIndex, i, nWidth, nHeight, nb_devices, selected_language, offset, tb_state, tb_flags;
 	char tmp[MAX_PATH], *log_buffer = NULL;
 	wchar_t* wbuffer = NULL;
@@ -2314,6 +2397,9 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	switch (message) {
 
 	case WM_COMMAND:
+		if (pc_mode && pc_configured && LOWORD(wParam) != IDC_START &&
+			LOWORD(wParam) != IDCANCEL && LOWORD(wParam) != IDOK && LOWORD(wParam) != IDC_LOG)
+			return (INT_PTR)TRUE;
 #ifdef RUFUS_TEST
 		if (LOWORD(wParam) == IDC_TEST) {
 			break;
@@ -2340,6 +2426,13 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		switch(LOWORD(wParam)) {
 		case IDOK:			// close application
 		case IDCANCEL:
+			if (pc_mode && pc_session.phase == PCVIEWER_FINISHING)
+				return (INT_PTR)TRUE;
+			if (pc_mode && pc_session.phase != PCVIEWER_TERMINAL &&
+				format_thread == NULL && !op_in_progress) {
+				PcviewerFinishLater(20);
+				return (INT_PTR)TRUE;
+			}
 			EnableWindow(GetDlgItem(hDlg, IDCANCEL), FALSE);
 			if (format_thread != NULL) {
 				if ((no_confirmation_on_cancel) || (Notification(MB_YESNO | MB_ICONWARNING,
@@ -2679,6 +2772,13 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			}
 			break;
 		case IDC_START:
+			if (pc_mode) {
+				if (!PcviewerBeginChecking(&pc_session)) return (INT_PTR)TRUE;
+				if (!PcviewerTargetSelected(&pc_request) || !PcviewerProfileMatches()) {
+					PcviewerFinishLater(64);
+					return (INT_PTR)TRUE;
+				}
+			}
 			if (format_thread != NULL)
 				return (INT_PTR)TRUE;
 			// Just in case
@@ -2699,7 +2799,10 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			selection_default = (int)ComboBox_GetCurItemData(hBootType);
 			// Create a thread to validate options and download files as needed (so that we can update the UI).
 			// On exit, this thread sends message UM_FORMAT_START back to this dialog.
-			if (CreateThread(NULL, 0, BootCheckThread, NULL, 0, NULL) == NULL) {
+			boot_worker = CreateThread(NULL, 0, BootCheckThread, NULL, 0, NULL);
+			if (pc_mode) pc_boot_worker = boot_worker;
+			else if (boot_worker != NULL) CloseHandle(boot_worker);
+			if (boot_worker == NULL) {
 				uprintf("Unable to start boot check thread");
 				ErrorStatus = RUFUS_ERROR(APPERR(ERROR_CANT_START_THREAD));
 				PostMessage(hMainDialog, UM_FORMAT_COMPLETED, (WPARAM)FALSE, 0);
@@ -2795,6 +2898,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		wParam = DBT_CUSTOMEVENT;
 		// Fall through
 	case WM_DEVICECHANGE:
+		if (pc_mode && pc_configured) return (INT_PTR)TRUE;
 		// The Windows hotplug subsystem sucks. Among other things, if you insert a GPT partitioned
 		// USB drive with zero partitions, the only device messages you will get are a stream of
 		// DBT_DEVNODES_CHANGED and that's it. But those messages are also issued when you get a
@@ -2896,6 +3000,16 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		// Let's not take any risk: Ask Windows to redraw the whole dialog before we exit init
 		RedrawWindow(hMainDialog, NULL, NULL, RDW_ALLCHILDREN | RDW_UPDATENOW);
 		InvalidateRect(hMainDialog, NULL, TRUE);
+		if (pc_mode) {
+			BOOL prepared = PcviewerApplyProfile();
+			pc_configured = TRUE;
+			PcviewerLockControls();
+			if (!prepared) PcviewerFinishLater(64);
+			else {
+				PcviewerMarkReady(&pc_session);
+				PostMessage(hDlg, WM_COMMAND, IDC_START, 0);
+			}
+		}
 
 		return (INT_PTR)FALSE;
 
@@ -3007,6 +3121,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		break;
 
 	case WM_DROPFILES:
+		if (pc_mode) { DragFinish((HDROP)wParam); return (INT_PTR)TRUE; }
 		if (format_thread == NULL) {
 			droppedFileInfo = (HDROP)wParam;
 				wbuffer = calloc(MAX_PATH, sizeof(wchar_t));
@@ -3039,6 +3154,11 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	case WM_CLIENTSHUTDOWN:
 	case WM_QUERYENDSESSION:
 	case WM_ENDSESSION:
+		if (pc_mode && pc_session.phase != PCVIEWER_TERMINAL) {
+			if (!op_in_progress && pc_session.phase != PCVIEWER_FINISHING)
+				PcviewerFinishLater(20);
+			return (INT_PTR)TRUE;
+		}
 		if (op_in_progress)
 			return (INT_PTR)TRUE;
 		if (message == WM_CLOSE) {
@@ -3091,6 +3211,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		break;
 
 	case UM_FORMAT_START:
+		if (pc_mode && !PcviewerBeginConfirming(&pc_session)) return (INT_PTR)TRUE;
 		if (wParam != BOOTCHECK_PROCEED)
 			goto aborted_start;
 		// All subsequent aborts below translate to a user cancellation
@@ -3137,10 +3258,18 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			(Notification(MB_OKCANCEL | MB_ICONWARNING, lmprintf(MSG_197), lmprintf(MSG_196, SelectedDrive.SectorSize)) != IDOK))
 			goto aborted_start;
 
+		if (pc_mode && (!PcviewerTargetSelected(&pc_request) || !PcviewerProfileMatches())) {
+			PcviewerFinishLater(64);
+			return (INT_PTR)TRUE;
+		}
 		nDeviceIndex = ComboBox_GetCurSel(hDeviceList);
 		DeviceNum = (DWORD)ComboBox_GetItemData(hDeviceList, nDeviceIndex);
 		InitProgress(zero_drive || write_as_image);
 		format_thread = CreateThread(NULL, 0, FormatThread, (LPVOID)(uintptr_t)DeviceNum, 0, NULL);
+		if (pc_mode && format_thread != NULL) {
+			pc_format_worker = format_thread;
+			PcviewerBeginFormatting(&pc_session);
+		}
 		if (format_thread == NULL) {
 			uprintf("Unable to start formatting thread");
 			ErrorStatus = RUFUS_ERROR(APPERR(ERROR_CANT_START_THREAD));
@@ -3167,12 +3296,15 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 				unattend_xml_path = NULL;
 			}
 			EnableControls(TRUE, FALSE);
+			if (pc_mode) PcviewerFinishLater(20);
 			break;
 		}
 		ErrorStatus = RUFUS_ERROR((wParam == BOOTCHECK_DOWNLOAD_ERROR) ? APPERR(ERROR_CANT_DOWNLOAD) : ERROR_GEN_FAILURE);
 		// Fall through
 
 	case UM_FORMAT_COMPLETED:
+		if (pc_mode) PcviewerLatchResult(&pc_session,
+			SCODE_CODE(ErrorStatus) == ERROR_CANCELLED ? 20 : (IS_ERROR(ErrorStatus) ? 10 : 0));
 		zero_drive = FALSE;
 		format_thread = NULL;
 		if (unattend_xml_path != NULL) {
@@ -3255,6 +3387,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		}
 		ErrorStatus = 0;
 		LastWriteError = 0;
+		if (pc_mode) PcviewerFinishLater(pc_session.result);
 		return (INT_PTR)TRUE;
 
 	}
@@ -3382,6 +3515,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		{"wait",       required_argument, NULL, 'w'},
 		{0, 0, NULL, 0}
 	};
+
+	{
+		int count, parsed;
+		wchar_t** args = CommandLineToArgvW(GetCommandLineW(), &count);
+		if (args == NULL) return 10;
+		parsed = PcviewerParse(count, (const wchar_t* const*)args, &pc_request);
+		LocalFree(args);
+		if (parsed == PCVIEWER_PARSE_INVALID) return 64;
+		pc_mode = parsed == PCVIEWER_PARSE_VALID;
+		if (pc_mode) { PcviewerSessionInit(&pc_session); disable_hogger = TRUE; }
+	}
 
 	// Disable loading system DLLs from the current directory (side-loading mitigation)
 	// PS: You know that official MSDN documentation for SetDllDirectory() that explicitly
@@ -3518,6 +3662,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		appstore_version = TRUE;
 		goto skip_args_processing;
 	}
+
+	if (pc_mode) goto skip_args_processing;
 
 	// We have to process the arguments before we acquire the lock and process the locale
 	PF_INIT(__wgetmainargs, Msvcrt);
@@ -3930,6 +4076,11 @@ relaunch:
 		if (no_focus && (msg.wParam == VK_CONTROL))
 			ctrl_without_focus = op_in_progress;
 
+		/* Dedicated mode keeps ordinary dialog keys and Alt-F4, but no format-changing shortcuts. */
+		if (pc_mode && ((msg.message == WM_SYSKEYDOWN && msg.wParam != VK_F4) ||
+			(msg.message == WM_KEYDOWN && (GetKeyState(VK_CONTROL) & 0x8000))))
+			continue;
+
 		// Ctrl-L => Open/Close the log
 		if ((ctrl_without_focus || ((GetKeyState(VK_CONTROL) & 0x8000) && (msg.message == WM_KEYDOWN)))
 			&& (msg.wParam == 'L')) {
@@ -4280,7 +4431,7 @@ extern int TestHashes(void);
 	}
 	if (hFidoDlg != NULL)
 		SendMessage(hFidoDlg, WM_CLOSE, 0, 0);
-	if (relaunch) {
+	if (relaunch && !pc_mode) {
 		relaunch = FALSE;
 		reinit_localization();
 		goto relaunch;
@@ -4346,7 +4497,7 @@ out:
 	_CrtDumpMemoryLeaks();
 #endif
 
-	return 0;
+	return pc_mode ? (pc_session.phase == PCVIEWER_TERMINAL ? pc_session.result : 10) : 0;
 }
 
 /*

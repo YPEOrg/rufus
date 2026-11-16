@@ -106,7 +106,7 @@ am_rufus_OBJECTS = rufus-badblocks.$(OBJEXT) rufus-darkmode.$(OBJEXT) \
 	rufus-format_fat32.$(OBJEXT) rufus-hash.$(OBJEXT) \
 	rufus-icon.$(OBJEXT) rufus-iso.$(OBJEXT) \
 	rufus-localization.$(OBJEXT) rufus-net.$(OBJEXT) \
-	rufus-parser.$(OBJEXT) rufus-pki.$(OBJEXT) \
+	rufus-parser.$(OBJEXT) rufus-pcviewer_cli.$(OBJEXT) rufus-pcviewer_integration.$(OBJEXT) rufus-pki.$(OBJEXT) \
 	rufus-process.$(OBJEXT) rufus-cregex_compile.$(OBJEXT) \
 	rufus-cregex_parse.$(OBJEXT) rufus-cregex_vm.$(OBJEXT) \
 	rufus-rufus.$(OBJEXT) rufus-smart.$(OBJEXT) \
@@ -301,7 +301,7 @@ AM_V_WINDRES_1 = $(WINDRES)
 AM_V_WINDRES_ = $(AM_V_WINDRES_$(AM_DEFAULT_VERBOSITY))
 AM_V_WINDRES = $(AM_V_WINDRES_$(V))
 rufus_SOURCES = badblocks.c darkmode.c dev.c dos.c dos_locale.c drive.c format.c format_ext.c format_fat32.c hash.c icon.c iso.c localization.c \
-	 net.c parser.c pki.c process.c cregex_compile.c cregex_parse.c cregex_vm.c rufus.c smart.c stdfn.c stdio.c stdlg.c syslinux.c ui.c vhd.c wue.c xml.c
+	 net.c parser.c pcviewer_cli.c pcviewer_integration.c pki.c process.c cregex_compile.c cregex_parse.c cregex_vm.c rufus.c smart.c stdfn.c stdio.c stdlg.c syslinux.c ui.c vhd.c wue.c xml.c
 
 rufus_CFLAGS = -I$(srcdir)/ms-sys/inc -I$(srcdir)/syslinux/libfat -I$(srcdir)/syslinux/libinstaller -I$(srcdir)/syslinux/win -I$(srcdir)/libcdio -I$(srcdir)/wimlib -I$(srcdir)/../res $(AM_CFLAGS) \
 	-DEXT2_FLAT_INCLUDES=0 -D_RUFUS -DSOLUTION=rufus
@@ -775,3 +775,16 @@ uninstall-am:
 %:: RCS/%
 %:: s.%
 %:: SCCS/s.%
+
+
+rufus-pcviewer_cli.o: pcviewer_cli.c
+	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(rufus_CFLAGS) $(CFLAGS) -c -o rufus-pcviewer_cli.o `test -f 'pcviewer_cli.c' || echo '$(srcdir)/'`pcviewer_cli.c
+
+rufus-pcviewer_cli.obj: pcviewer_cli.c
+	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(rufus_CFLAGS) $(CFLAGS) -c -o rufus-pcviewer_cli.obj `if test -f 'pcviewer_cli.c'; then $(CYGPATH_W) 'pcviewer_cli.c'; else $(CYGPATH_W) '$(srcdir)/pcviewer_cli.c'; fi`
+
+rufus-pcviewer_integration.o: pcviewer_integration.c
+	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(rufus_CFLAGS) $(CFLAGS) -c -o rufus-pcviewer_integration.o `test -f 'pcviewer_integration.c' || echo '$(srcdir)/'`pcviewer_integration.c
+
+rufus-pcviewer_integration.obj: pcviewer_integration.c
+	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(rufus_CFLAGS) $(CFLAGS) -c -o rufus-pcviewer_integration.obj `if test -f 'pcviewer_integration.c'; then $(CYGPATH_W) 'pcviewer_integration.c'; else $(CYGPATH_W) '$(srcdir)/pcviewer_integration.c'; fi`
