@@ -108,3 +108,63 @@ rollbackは専用mode分岐/module/build登録をrevertし通常GUIに戻す。�
 ## 未実証・リスク
 
 Windows UI/対象解決とthread終端の結合、通常GUI非回帰は静的根拠のみ。UI event再入/shortcut/saved設定による固定値逸脱とErrorStatus reset競合をV4〜8で重点確認する。これらは実装後検証事項で、未決仕様の放置ではない。実装開始可否は独立Reviewで判定する。
+
+## U: 小型UI追加計画（2026-11-16、現在の実装対象）
+
+基準`7e503512`。上記D1〜D4の処理/結果契約を維持し、D3の可視本体UIだけを本節へ置換。今回の依頼は計画commitまでで、実装しない。以前の実装/試験結果は[ImplementationReport](ImplementationReport.md)の履歴であり、新UIの成功証拠ではない。
+
+### UI調査・影響マップ
+
+| IM | 実在箇所 / 変更 |
+|---|---|
+| UI1 | `rufus.c`: WM_INITDIALOGのtopmost/foreground/focus、WinMainのShowWindow/UpdateWindow、MainCallback/ClockTimer/UM_PROGRESS_INIT・EXIT、PcviewerFinishTimer/Later。専用だけ非表示にし、小型viewへの状態投影を接続。 |
+| UI2 | `stdlg.c`: MyDialogBoxは必ずShowWindow(hMainDialog,SW_NORMAL)、NotificationExはhMainDialogをowner指定。専用owner解決/本体再表示抑止を追加。本文・button・返値・既存Cancel確認は変えない。 |
+| UI3 | `ui.c`: UpdateProgressはhProgressへPBM_SETPOS。`localization.c`: PrintInfoMessageはprogress text、PrintStatusMessageはowner-draw statusへ文字列。既存送信先を変更せず、Rufus内snapshotへ表示データだけ投影。 |
+| UI4 | 新規`src/pcviewer_compact_ui.c/.h`: 小型modeless window、進捗/情報/状態/時間/取消、snapshot/owner/lifetime。新規`IDD_PCV_PROGRESS`とcontrol IDを`rufus.rc/resource.h`へ。必要な新規文言は既存`res/loc/rufus.loc`方式の英語fallback/日本語へ追加、既存Cancel/通知文言は再利用。VS/MinGW登録。 |
+| UI5 | `tests/` 新規pure view-state/fake window tests、既存CLI/adapter試験維持。実Windowsのowner/描画/入力は後段。 |
+
+`IDD_DIALOG`は現行resourceにWS_VISIBLEなし。したがって生成直後hideするだけでなく、専用modeでは最初からShow/foreground/focusを行わない。hMainDialog/hProgress/hStatusやGetDlgItem依存を小型へ付け替えない。隠した既存mainは処理ホストとして生存させ、追加viewは表示と取消の委譲のみを担当する。既存大クラス全体の再構成や別formatterはしない。
+
+### U1 起動・確認・owner
+
+1. 専用引数検査と既存初期化は維持。hidden mainを作り、既存controlsを固定する。
+2. 既存Startをpostする**前**に小型windowと必須controls/timerの準備を完了する。小型もこの段階は非表示。作成/初期化失敗は10をラッチしworker起動0。主画面をfallback表示して勝手に続行しない。
+3. 既存Start→BootCheck→既存警告/消去確認へ。専用MyDialogBoxは本体をShowしない。小型非表示時の通知ownerはNULL（既存CenterDialogのscreen中央配置を使用）、小型可視時は小型をownerにする。owner差替えはhMainDialogを指定するroot通知に限定し、通知内more-info等の子dialogの既存ownerは維持する。専用modeの共通MyDialogBoxはどの経路でもmainをShowしない。通常modeは今のowner/ShowWindow動作を維持。通知は従来modalで、button/意味/返値を変えない。確認中は小型の取消操作を受け付けない。
+4. 最終確認と対象/profile再照合を終え、FormatThread生成**直前**に小型を表示して可視性/必須controlsを確認する。失敗なら10・worker起動0。既存Start内部からFormatThreadを起動し、進捗を小型へ投影する。生成失敗は既存失敗通知＋10。
+5. 確認取消は小型を出さず既存20終端へ。必要な失敗/取消通知は表示してその閉じ操作を待つ。UAC/署名警告/二重起動警告等の既存起動時通知は非表示化の対象にしない。
+
+visible ownerの選択は新規の狭い関数をMyDialogBox/Notificationの境界から利用する。一般dialog frameworkは作らず、通常表示経路へ専用判断をばらまかない。mainのtopmost/foreground、MyDialogBox、終了時再表示の全経路をUI1/2で確認する。Taskbar進捗/Flashの表示先も専用の可視小型へ解決し、既存`dialog_handle`やengine用hMainDialogは置換しない。ログ画面を本体代わりに自動表示しない。
+
+### U2 進捗と取消・寿命
+
+小型は対象の表示名、進捗bar、処理情報、状態文、経過時間、取消buttonを持つ。初期幅約360 DIP、既存Segoe UI/配色・翻訳文字列を使いDPI/長文で折返し。別のパーセント算出はせず既存MAX_PROGRESS、PBM状態/marquee、PrintInfo/PrintStatus/ClockTimerの値を使う。
+
+既存windowへの更新は維持。新snapshotへコピーするhookだけ追加し、workerからview controlsへ直接触らない。snapshot文字列は呼出中に所有コピー（上限2048 UTF-8 bytes、境界で安全に切詰め、元文字列のpointer保持禁止）、短時間lockで更新。UI側100ms timerがsnapshotを読み、lockを離してからcontrolsを更新する。lock中SendMessage/Notification/waitをしない。進捗数値はhidden hProgressのPBM_GETPOS/GETSTATEをUI timerが参照でき、marqueeと経過時間は既存UI handlerからsnapshotへ渡す。statusbar owner-draw pointerをSB_GETTEXTで文字列扱いしない。進捗はプロセス外へ送らない。
+
+小型Cancel/×/Alt-F4はMainCallbackの既存IDCANCELへ一度委譲し、自前DestroyWindow/PostQuit/TerminateThreadを行わない。取消確認Noは継続、Yesは既存ERROR_CANCELLED協調停止、取消受付後もworker終端を待つ。WinMainのIsDialogMessage対象へ専用modeless viewも追加し、Tab移動を保つ。小型には破壊承認buttonを置かずEnter/Esc/Alt-F4も取消要求として同じ経路へ委譲し、二重送信しない。通知表示中は小型を無効化し再入を抑止（worker threadからの既存通知でもowner無効状態を維持）。Finishingでは取消/×を無効扱いとし「後処理・終了確認中」を表示、100%でも閉じない。
+
+小型とsnapshotはworker終端・既存結果通知の完了までは維持し、保持worker全終了・handle解放・Terminal確定後にtimer停止→投影hook無効化→view破棄→mainを含む既存process cleanupの順で破棄する。wait/close/SetTimer失敗は小型が可視ならそこへ理由を表示し、確認取消後など小型非表示/未作成の場合は既存Notificationで必ず可視に知らせる（同一異常の通知を連打しない）。hidden controlsへの文字設定だけで通知済みとしない。開始前ならworker起動0のまま、成功偽装/強制killなし。実行中に小型表示/controlsが失われた場合は、成功ラッチ後のFinishingも含めPcviewerTerminalCheckFailed等で成功資格を失効させる（既確定10/20は保持）。workerが稼働中なら既存協調取消を要求し、別の既存Notificationで状況を可視化して終了を待つ（main表示fallbackなし、0にしない）。OS強制終了まで復旧できる保証はしない。
+
+### UI検証計画
+
+| Test / AC | 操作・入力 | 期待証拠 |
+|---|---|---|
+| UV1 / UAC1,5 | 専用/通常の起動→確認→終了、瞬間window可視性を記録 | 専用main visible回数0、通常は従来表示。UAC/manifest不変。 |
+| UV2 / UAC2 | 各条件付き警告/消去確認OK/Cancel、通知owner・最小化/Alt-Tab/前面 | 既存本文/ボタン/順序、無断承認0、操作可能、通知中小型入力0。 |
+| UV3 / UAC3 | 0/途中/100%、marquee/paused/error、長文・マルチbyte・DPI、snapshot更新競合 | 既存値を投影、壊れた文字列なし、UI threadのみ操作、PCViewer通信0。 |
+| UV4 / UAC3,4 | 小型Cancel/×/Enter/Esc/Alt-F4/Tab、確認No→継続/Yes→停止、連打、Finishing閉じ要求 | 既存取消1回、worker生存時destroy/exit0回、Terminal後のみ破棄。 |
+| UV5 / UAC4 | 小型/必須control/timer失敗、format生成失敗、実行中view喪失、worker wait/close異常、確認取消後の小型hidden状態で終端timer失敗、成功ラッチ後Finishingのview喪失 | 起動前はworker0/10、開始後は協調取消＋可視通知・成功0禁止。確認取消後の終端異常も可視Notification必須、main表示0/worker追加起動0。 |
+| UV6 / UAC4,5 | 全worker遅延・通知再入・normalGUI/CLI、固定profile回帰 | 既存471assertions継続、normal動作不変、独立ラッチ/終了条件不変。 |
+
+pure/fakeはstate→表示命令/owner/取消委譲/破棄順を新規testで検証し、VS/MinGW登録を静的確認。旧274/197件が追加UIを実行しないことを明記。Windows表示・modal owner・DPI・入力はWindows build後の結合検証が必要。今回の計画工程では全て未実施。実formatを伴う試験は別の消去許可がある時だけ実施し、現在の確認画面停止という許可を拡張しない。
+
+### WBS・ゲート・切戻し
+
+| Task | 対象/依存 | Done / commit目的 |
+|---|---|---|
+| U-T1 | UI4/5、U2 | 新view-state/snapshot/取消委譲とfake試験。表示専用責務、CLI/engine非変更。 |
+| U-T2 | UI1/2/3、U-T1 | hidden main/owner/表示投影と既存Start接続、UV1〜6の非破壊試験。U-T1と同じ小型UI機能commitに統合可。 |
+| U-T3 | build/resource/文書、U-T2 | 独立コードレビュー、既存試験/新fake試験、Windows引継ぎ。 |
+| U-T4 | U-T3 | Windows build・実可視性/操作検証。媒体消去は別許可まで行わない。 |
+
+読む順序: Requirements追加UAC→本節→Review最新判定→UI1〜5。UI公開挙動は本節で確定、局所レイアウト/識別子は実装裁量。実装開始ゲートは独立レビュー後に判定し、Windows受入は未実証のまま分離する。切戻しは追加view/owner分岐/hook/resource/buildをrevertして`7e503512`の専用本体表示へ戻す。CLI/設定形式移行なし、SD内容をrollbackで復元できるとはしない。

@@ -43,3 +43,26 @@ G1〜G6の根拠、独立指摘と解消結果を記録する。正本は[Requir
 ## 今回の文書検証
 
 ローカルMarkdown参照存在、指定branch/基準、git diff --check、stage対象がこの計画3文書だけであることを確認する。製品source/設定/テスト/Windows環境は変更・実行しない。PCViewer側の停止済#248未追跡草案は変更・commit・削除しない。
+
+## 2026-11-16 小型UI追加計画レビュー（最新、初回CLI計画とは別）
+
+対象: `7e503512`に対するRequirements UAC1〜5 / Specs U節。上記のG1〜G6 Passは初回CLIの計画判定であり、追加UIの実証ではない。新規UIで確認・取消の可視性とprocess lifetimeに関係するため既存標準3文書を維持する。
+
+独立アーキテクチャ/安全担当が実ファイルを再レビューし、以下の指摘解消と計画commit可を確認した。
+
+| Gate | 判定 / 根拠 |
+|---|---|
+| G1 要求 | Pass: UAC1〜5で本体非表示・確認維持・小型進捗/取消・IPCなし/UAC不変を明記。 |
+| G2 既存根拠 | Pass: UI1〜5、ShowWindow/MyDialogBox/owner、既存progress/status/終了契約を調査。 |
+| G3 設計 | Pass: hidden mainを処理hostとして保持、view投影のみ、root通知owner限定、可視性失敗/終了順を確定。 |
+| G4 検証 | Pass: UV1〜6で非表示・modal/keyboard・投影・取消・失敗・通常回帰を具体化、fakeと実Windowsを分離。 |
+| G5 作業 | Pass: U-T1〜4、局所変更map、実装裁量/対象外、計画のみ範囲を明示。 |
+| G6 影響 | Pass: 通常GUI/CLI/engine/UAC不変、rollbackと媒体消去許可の境界を明記。 |
+
+指摘と解消:
+- 確認取消後に小型hiddenのまま終了監視が失敗する経路: 可視Notificationを必須化、UV5へ追加。
+- viewとmainの破棄順の文言矛盾: worker終端/通知完了/Terminal後にview→mainの順へ統一。
+- 成功ラッチ後Finishingのview喪失: 成功資格を失効、既確定失敗/取消を保持、UV5へ追加。
+- modeless keyboardと通知子owner: IsDialogMessage/Tab/Enter/Esc/Alt-F4、rootのみowner差替えと子owner維持を明記。
+
+**追加UI実装開始ゲート: Pass（G1〜G6）、Human Decision Requiredなし。** 必須未解消なし。ただし今回依頼は計画までなので実装しない。**Windows追加UI受入: Hold（未実証）**。既存471assertionsや旧UIでの消去確認/取消20を新UI成功証拠に流用しない。製品コード/テスト/Windows操作なし。計画3文書のdiff --checkを確認。
