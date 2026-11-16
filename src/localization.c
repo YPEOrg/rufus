@@ -34,6 +34,7 @@
 #include "resource.h"
 #include "msapi_utf8.h"
 #include "localization.h"
+#include "pcviewer_compact_ui.h"
 #include "localization_data.h"
 
 /*
@@ -424,6 +425,7 @@ static void PrintInfoMessage(char* msg) {
 	InvalidateRect(hProgress, NULL, TRUE);
 }
 static void PrintStatusMessage(char* msg) {
+	PcviewerCompactSnapshotStatus(msg);
 	SendMessageLU(hStatus, SB_SETTEXTW, SBT_OWNERDRAW | SB_SECTION_LEFT, msg);
 }
 typedef void PRINT_FUNCTION(char*);

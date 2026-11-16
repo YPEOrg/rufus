@@ -42,6 +42,7 @@
 #include "rufus.h"
 #include "format.h"
 #include "pcviewer_integration.h"
+#include "pcviewer_compact_ui.h"
 #include <shellapi.h>
 #include "missing.h"
 #include "resource.h"
@@ -1063,6 +1064,7 @@ static void CALLBACK ClockTimer(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dw
 	timer++;
 	static_sprintf(szTimer, "%02d:%02d:%02d", timer/3600, (timer%3600)/60, timer%60);
 	SendMessageA(hStatus, SB_SETTEXTA, SBT_OWNERDRAW | SB_SECTION_RIGHT, (LPARAM)szTimer);
+	PcviewerCompactSetElapsed(szTimer);
 }
 
 // Device Refresh Timer
@@ -2295,6 +2297,28 @@ static void PrintStatusTimeout(const char* str, BOOL val)
 /*
  * Main dialog callback
  */
+static BOOL PcviewerCompactCancelRequest(void)
+{
+	if (pc_session.phase == PCVIEWER_FINISHING || pc_session.phase == PCVIEWER_TERMINAL)
+		return FALSE;
+	SendMessage(hMainDialog, WM_COMMAND, IDCANCEL, 0);
+	return SCODE_CODE(ErrorStatus) == ERROR_CANCELLED;
+}
+
+static void PcviewerCompactViewLost(void)
+{
+	if (pc_session.phase == PCVIEWER_TERMINAL) return;
+	PcviewerTerminalCheckFailed(&pc_session);
+	if (pc_session.format_started && pc_session.phase != PCVIEWER_FINISHING) {
+		/* Same cooperative stop flag as existing Cancel; never terminate a worker. */
+		ErrorStatus = RUFUS_ERROR(ERROR_CANCELLED);
+		PrintInfo(0, MSG_201);
+	} else if (pc_session.phase != PCVIEWER_FINISHING) {
+		PcviewerFinishLater(10);
+	}
+	PcviewerCompactError(lmprintf(MSG_377));
+}
+
 static BOOL PcviewerApplyProfile(void)
 {
 	DWORD target;
@@ -2335,8 +2359,11 @@ static VOID CALLBACK PcviewerFinishTimer(HWND window, UINT message, UINT_PTR tim
 {
 	int observed;
 	(void)message; (void)time;
+	PcviewerCompactDispatchPending();
+	if (!PcviewerCompactCanFinish()) return;
 	observed = PcviewerPollWorkers(&pc_session, &pc_boot_worker, &pc_format_worker);
 	if (observed < 0) {
+		PcviewerCompactError(lmprintf(MSG_377));
 		if (!pc_wait_error_reported) {
 			uprintf("PCViewer: worker completion/handle release could not be confirmed; exit is deferred");
 			pc_wait_error_reported = TRUE;
@@ -2349,17 +2376,20 @@ static VOID CALLBACK PcviewerFinishTimer(HWND window, UINT message, UINT_PTR tim
 	op_in_progress = FALSE;
 	format_thread = NULL;
 	KillTimer(window, timer_id);
+	PcviewerCompactDestroyTerminal();
 	PostMessage(window, WM_COMMAND, IDCANCEL, 0);
 }
 
 static void PcviewerFinishLater(int result)
 {
 	PcviewerLatchResult(&pc_session, result);
+	PcviewerCompactSetPhaseFinishing();
 	PcviewerLockControls();
 	/* Installed only after existing result notifications have returned. */
 	if (!SetTimer(hMainDialog, TID_PCV_FINISH, 100, PcviewerFinishTimer)) {
 		PcviewerTerminalCheckFailed(&pc_session);
 		uprintf("PCViewer: cannot observe worker completion; close is deferred");
+		PcviewerCompactError(lmprintf(MSG_377));
 		SendMessageA(hStatus, SB_SETTEXTA, 0,
 			(LPARAM)"PCViewer: completion timer unavailable. Exit deferred; inspect the log.");
 	}
@@ -2395,6 +2425,10 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	loc_cmd* lcmd = NULL;
 
 	switch (message) {
+	case PCVIEWER_COMPACT_DISPATCH:
+		PcviewerCompactDispatchPending();
+		return (INT_PTR)TRUE;
+
 
 	case WM_COMMAND:
 		if (pc_mode && pc_configured && LOWORD(wParam) != IDC_START &&
@@ -2886,6 +2920,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		timer = 0;
 		static_sprintf(szTimer, "00:00:00");
 		SendMessageA(hStatus, SB_SETTEXTA, SBT_OWNERDRAW | SB_SECTION_RIGHT, (LPARAM)szTimer);
+	PcviewerCompactSetElapsed(szTimer);
 		SetTimer(hMainDialog, TID_APP_TIMER, 1000, ClockTimer);
 		break;
 	case UM_SELECT_ISO:
@@ -2977,6 +3012,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			ulRegister = SHChangeNotifyRegister(hDlg, 0x0001 | 0x0002 | 0x8000,
 				SHCNE_MEDIAINSERTED | SHCNE_MEDIAREMOVED, UM_MEDIA_CHANGE, 1, &NotifyEntry);
 		}
+		if (!pc_mode) {
 		// Bring our Window on top. We have to go through all *THREE* of these, or Far Manager hides our window :(
 		SetWindowPos(hMainDialog, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
 		SetWindowPos(hMainDialog, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
@@ -2984,6 +3020,8 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 
 		// Set 'START' as the selected button if it's enabled, otherwise use 'SELECT', instead
 		SendMessage(hDlg, WM_NEXTDLGCTL, (WPARAM)(IsWindowEnabled(hStart) ? hStart : hSelectImage), TRUE);
+
+		}
 
 #if defined(ALPHA)
 		// Add a VERY ANNOYING popup for Alpha releases, so that people don't start redistributing them
@@ -3004,7 +3042,12 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			BOOL prepared = PcviewerApplyProfile();
 			pc_configured = TRUE;
 			PcviewerLockControls();
-			if (!prepared) PcviewerFinishLater(64);
+			GetWindowTextU(hDeviceList, tmp, sizeof(tmp));
+			if (!PcviewerCompactInit(hDlg, hMainInstance, PcviewerCompactCancelRequest, PcviewerCompactViewLost) ||
+				!PcviewerCompactPrepare(tmp, lmprintf(MSG_376))) {
+				PcviewerFinishLater(10);
+				PcviewerCompactError(lmprintf(MSG_377));
+			} else if (!prepared) PcviewerFinishLater(64);
 			else {
 				PcviewerMarkReady(&pc_session);
 				PostMessage(hDlg, WM_COMMAND, IDC_START, 0);
@@ -3172,6 +3215,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 
 	case UM_PROGRESS_INIT:
 		isMarquee = (wParam == PBS_MARQUEE);
+		if (pc_mode) PcviewerCompactSetMarquee(isMarquee);
 		SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
 		if (isMarquee) {
 			SendMessage(hProgress, PBM_SETMARQUEE, TRUE, 0);
@@ -3184,6 +3228,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		break;
 
 	case UM_PROGRESS_EXIT:
+		if (pc_mode) PcviewerCompactSetMarquee(FALSE);
 		tb_state = PBST_NORMAL;
 		tb_flags = TASKBAR_NORMAL;
 		if (isMarquee) {
@@ -3198,7 +3243,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			tb_state = PBST_ERROR;
 			tb_flags = TASKBAR_ERROR;
 			MessageBeep(MB_ICONERROR);
-			FlashTaskbar(dialog_handle);
+			FlashTaskbar(pc_mode ? (HANDLE)PcviewerCompactGetOwner(hMainDialog) : dialog_handle);
 		}
 		SendMessage(hProgress, PBM_SETSTATE, (WPARAM)tb_state, 0);
 		SetTaskbarProgressState(tb_flags);
@@ -3264,6 +3309,11 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		}
 		nDeviceIndex = ComboBox_GetCurSel(hDeviceList);
 		DeviceNum = (DWORD)ComboBox_GetItemData(hDeviceList, nDeviceIndex);
+		if (pc_mode && !PcviewerCompactShowBeforeFormat()) {
+			PcviewerFinishLater(10);
+			PcviewerCompactError(lmprintf(MSG_377));
+			return (INT_PTR)TRUE;
+		}
 		InitProgress(zero_drive || write_as_image);
 		format_thread = CreateThread(NULL, 0, FormatThread, (LPVOID)(uintptr_t)DeviceNum, 0, NULL);
 		if (pc_mode && format_thread != NULL) {
@@ -3328,7 +3378,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			SetTaskbarProgressState(TASKBAR_NOPROGRESS);
 			PrintInfo(0, MSG_210);
 			MessageBeep(MB_OK);
-			FlashTaskbar(dialog_handle);
+			FlashTaskbar(pc_mode ? (HANDLE)PcviewerCompactGetOwner(hMainDialog) : dialog_handle);
 		} else if (SCODE_CODE(ErrorStatus) == ERROR_CANCELLED) {
 			SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_PAUSED, 0);
 			SetTaskbarProgressState(TASKBAR_PAUSED);
@@ -3339,7 +3389,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			SetTaskbarProgressState(TASKBAR_ERROR);
 			PrintInfo(0, MSG_212);
 			MessageBeep(MB_ICONERROR);
-			FlashTaskbar(dialog_handle);
+			FlashTaskbar(pc_mode ? (HANDLE)PcviewerCompactGetOwner(hMainDialog) : dialog_handle);
 			GetProcessSearch(0, 0x07, TRUE);
 			// TODO: Fix/Improve this
 			if (BlockingProcessList.Index > 0) {
@@ -3525,6 +3575,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		if (parsed == PCVIEWER_PARSE_INVALID) return 64;
 		pc_mode = parsed == PCVIEWER_PARSE_VALID;
 		if (pc_mode) { PcviewerSessionInit(&pc_session); disable_hogger = TRUE; }
+		PcviewerCompactEnable(pc_mode);
 	}
 
 	// Disable loading system DLLs from the current directory (side-loading mitigation)
@@ -4042,8 +4093,10 @@ relaunch:
 	if (!SetAlertPromptHook())
 		uprintf("WARNING: Could not set alert prompt hook");
 
-	ShowWindow(hDlg, SW_SHOWNORMAL);
-	UpdateWindow(hDlg);
+	if (!pc_mode) {
+		ShowWindow(hDlg, SW_SHOWNORMAL);
+		UpdateWindow(hDlg);
+	}
 
 	// Do our own event processing and process "magic" commands
 	while(GetMessage(&msg, NULL, 0, 0)) {
@@ -4424,7 +4477,7 @@ extern int TestHashes(void);
 		}
 
 		// Let the system handle dialog messages (e.g. those from the tab key)
-		if (!IsDialogMessage(hDlg, &msg) && !IsDialogMessage(hLogDialog, &msg)) {
+		if (!PcviewerCompactIsDialogMessage(&msg) && !IsDialogMessage(hDlg, &msg) && !IsDialogMessage(hLogDialog, &msg)) {
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
 		}

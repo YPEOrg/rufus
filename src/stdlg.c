@@ -39,6 +39,7 @@
 #include "msapi_utf8.h"
 #include "localization.h"
 #include "ui.h"
+#include "pcviewer_compact_ui.h"
 
 #include "registry.h"
 #include "settings.h"
@@ -785,16 +786,17 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
  */
 int NotificationEx(int type, const char* dont_display_setting, const notification_info* more_info, const char* title, const char* format, ...)
 {
-	INT_PTR ret;
+	INT_PTR ret = FALSE;
 	va_list args;
 
+	PcviewerCompactModalEnter();
 	dialog_showing++;
 	notification_data.szMessageText = (char*)malloc(LOC_MESSAGE_SIZE);
 	if (notification_data.szMessageText == NULL)
-		return FALSE;
+		goto out;
 	notification_data.szMessageTitle = safe_strdup(title);
 	if (notification_data.szMessageTitle == NULL)
-		return FALSE;
+		goto out;
 	va_start(args, format);
 	safe_vsnprintf(notification_data.szMessageText, LOC_MESSAGE_SIZE - 1, format, args);
 	va_end(args);
@@ -803,9 +805,11 @@ int NotificationEx(int type, const char* dont_display_setting, const notificatio
 	notification_data.type = type;
 	notification_data.dont_display_setting = dont_display_setting;
 	ret = MyDialogBox(hMainInstance, IDD_NOTIFICATION, hMainDialog, NotificationCallback);
+out:
 	safe_free(notification_data.szMessageText);
 	safe_free(notification_data.szMessageTitle);
 	dialog_showing--;
+	PcviewerCompactModalLeave();
 	return (int)ret;
 }
 
@@ -1484,14 +1488,16 @@ BOOL SetTaskbarProgressState(TASKBAR_PROGRESS_FLAGS tbpFlags)
 {
 	if (ptbl == NULL)
 		return FALSE;
-	return !FAILED(ITaskbarList3_SetProgressState(ptbl, hMainDialog, tbpFlags));
+	HWND owner = PcviewerCompactGetOwner(hMainDialog);
+	return owner != NULL && !FAILED(ITaskbarList3_SetProgressState(ptbl, owner, tbpFlags));
 }
 
 BOOL SetTaskbarProgressValue(ULONGLONG ullCompleted, ULONGLONG ullTotal)
 {
 	if (ptbl == NULL)
 		return FALSE;
-	return !FAILED(ITaskbarList3_SetProgressValue(ptbl, hMainDialog, ullCompleted, ullTotal));
+	HWND owner = PcviewerCompactGetOwner(hMainDialog);
+	return owner != NULL && !FAILED(ITaskbarList3_SetProgressValue(ptbl, owner, ullCompleted, ullTotal));
 }
 
 static void Reposition(HWND hDlg, int id, int prev_id, int dx, int dw)
@@ -2236,10 +2242,12 @@ INT_PTR MyDialogBox(HINSTANCE hInstance, int Dialog_ID, HWND hWndParent, DLGPROC
 	// main dialog if the main dialog was minimized. This can result in situations where the
 	// user cannot restore the main window if a new dialog prompt was triggered while the
 	// main dialog was reduced => Ensure the main dialog is visible before we display anything.
-	ShowWindow(hMainDialog, SW_NORMAL);
-
+	if (!PcviewerCompactIsEnabled()) ShowWindow(hMainDialog, SW_NORMAL);
+	hWndParent = PcviewerCompactGetOwner(hWndParent);
+	PcviewerCompactModalEnter();
 	assert(rcTemplate != NULL);
 	ret = DialogBoxIndirect(hMainInstance, rcTemplate, hWndParent, lpDialogFunc);
+	PcviewerCompactModalLeave();
 	safe_free(rcTemplate);
 	return ret;
 }

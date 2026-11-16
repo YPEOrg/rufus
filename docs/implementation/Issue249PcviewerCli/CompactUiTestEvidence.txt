@@ -1,0 +1,8 @@
+PCVIEWER_CLI_TEST_PASS assertions=274; pure parser/state; no device calls
+PCVIEWER_INTEGRATION_TEST_PASS assertions=197; fake Windows API only; no device calls
+PCVIEWER_COMPACT_UI_TEST_PASS assertions=1668; fake window APIs; no device calls
+PCVIEWER_CLI_TEST_PASS assertions=274; pure parser/state; no device calls
+PCVIEWER_INTEGRATION_TEST_PASS assertions=197; fake Windows API only; no device calls
+PCVIEWER_COMPACT_UI_TEST_PASS assertions=1668; fake window APIs; no device calls
+VS_XML_PARSE_PASS
+DIFF_CHECK_PASS

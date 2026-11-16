@@ -642,6 +642,10 @@ t MSG_372 "I WILL ensure that all disks, except the one I want to install Window
 t MSG_373 "I WILL ensure that I don't leave this media plugged on a PC I do not plan to erase."
 t MSG_374 "I AGREE that any data loss resulting from the use of this option lies entirely with me."
 
+t MSG_375 "Rufus SD initialization"
+t MSG_376 "Finishing and waiting for the operation to exit..."
+t MSG_377 "The progress window or worker status is unavailable. Waiting for the operation to stop safely."
+
 # The following messages are for the Windows Store listing only and are not used by the application
 t MSG_900 "Rufus is a utility that helps format and create bootable USB flash drives, such as USB keys/pendrives, memory sticks, etc."
 t MSG_901 "Official site: %s"
@@ -8222,6 +8226,9 @@ t MSG_371 "このオプションを使用する場合はWindowsをインスト�
 t MSG_372 "Windows をインストールしたいディスク以外のすべてのディスクが切断されていることを確認します。"
 t MSG_373 "このメディアを、消去する予定のないPCに接続したままにしないことを確認します。"
 t MSG_374 "このオプションの使用により発生するデータ損失について、全責任を負うことに同意します。"
+t MSG_375 "Rufus SD初期化"
+t MSG_376 "後処理・終了確認中です..."
+t MSG_377 "進捗画面または処理の状態を確認できません。処理が安全に停止するまで待機します。"
 t MSG_900 "Rufus (ルーファス) とは、起動可能なUSBフラッシュドライブ（USBメモリなど）を作成したり、フォーマットをするためのソフトウェアです。"
 t MSG_901 "公式サイト: %s"
 t MSG_902 "ソースコード: %s"

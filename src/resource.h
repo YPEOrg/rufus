@@ -2,6 +2,11 @@
 // Microsoft Visual C++ generated include file.
 // Used by rufus.rc
 //
+#define IDD_PCV_PROGRESS                600
+#define IDC_PCV_INFO                    1600
+#define IDC_PCV_STATUS                  1601
+#define IDC_PCV_TIME                    1602
+#define IDC_PCV_TARGET                  1603
 #define IDD_DIALOG                      101
 #define IDD_ABOUTBOX                    102
 #define IDD_NOTIFICATION                103
@@ -619,9 +624,9 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1
-#define _APS_NEXT_RESOURCE_VALUE        505
+#define _APS_NEXT_RESOURCE_VALUE        601
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1114
+#define _APS_NEXT_CONTROL_VALUE         1604
 #define _APS_NEXT_SYMED_VALUE           4000
 #endif
 #endif

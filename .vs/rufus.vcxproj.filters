@@ -21,6 +21,9 @@
     <ClCompile Include="..\src\pcviewer_integration.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\pcviewer_compact_ui.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\rufus.c">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -61,3 +61,15 @@ fake adapterはGetDriveNumberそのもののWin32内部実装・実DeviceList初
 2026-11-16、アーキテクチャ担当・安全担当が修正後の実ファイルを再確認。必須未解消指摘なし。**Windowsビルドと既存消去確認画面までの検証へ渡すためのコミット可**。実Windows結合・実formatの受入Passではない。上記未検証範囲と消去確定禁止を維持する。
 
 最終コードで担当自身も2試験を再実行し、ASan/UBSan結果を[TestEvidence.txt](TestEvidence.txt)へ保存した。
+
+## 小型UI実装（計画5e2a7b1に対する追加、2026-11-16）
+
+専用モードだけhidden mainを処理hostに保持し、小型modeless進捗/取消viewを追加。最終消去確認後、worker生成前に表示する。MyDialogBoxの本体再表示を専用時に抑止し、root通知ownerを小型へ解決（非表示ならNULL）。子dialog owner/通常GUIは維持。UAC/manifest/CLI/進捗IPC/formatter変更なし。
+
+既存progress controlsは置換せず、status/time/marqueeは所有snapshotへコピー、UI timerで既存progress値とともに小型へ投影。取消は既存MainCallbackへ委譲、worker終了前にview/processを破棄しない。新dialogはresource/既存theme/localization方式を使う。
+
+独立レビューで、異常Notificationのmodal loop中に終了timerが再入し先に終了する経路、および既存通知中の異常Notificationによる共有通知データ再入を検出。終端確定前のmodal/in-flight/pending gateとUI messageへのエラー遅延表示を実装し、NotificationEx全寿命を外側のmodal guardで保護した。成功資格の失効/協調停止は遅延しない。
+
+小型fake 1668、既存CLI 274、adapter 197 assertions を通常およびASan/UBSan付きで再実行し全Pass。VS XML解析とdiff --checkもPass。[CompactUiTestEvidence.txt](CompactUiTestEvidence.txt)に結果保存。fakeはCanFinish条件・通知再入を検証するが、実MainCallback timer/実NotificationExの結合は未実証。Windows追加UIの描画・前面/入力・DPI・実confirmationはまだ未実証。Windows担当への検証は現在I:のread-only再確認、既存消去確認表示と取消まで。OK/実formatは行わない。
+
+追加UIの最終独立レビュー: アーキテクチャ・安全の両担当が修正後コードを確認し、必須未解消なし。Windowsビルドおよび消去確認表示・取消まで渡す限定コミット可。実Windows受入/実formatのPassではない。

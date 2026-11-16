@@ -312,6 +312,7 @@
     <ClCompile Include="..\src\process.c" />
     <ClCompile Include="..\src\pcviewer_cli.c" />
     <ClCompile Include="..\src\pcviewer_integration.c" />
+    <ClCompile Include="..\src\pcviewer_compact_ui.c" />
     <ClCompile Include="..\src\rufus.c" />
     <ClCompile Include="..\src\hash.c" />
     <ClCompile Include="..\src\smart.c" />
